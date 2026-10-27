@@ -35,7 +35,7 @@ client_secret*.json
 *.db-wal
 *.db-shm
 *Backup*
-*backup*
+.backup/
 
 # Operating system
 .DS_Store

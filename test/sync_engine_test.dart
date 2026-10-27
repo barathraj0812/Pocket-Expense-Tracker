@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocket_expense_tracker/data/app_database.dart';
 import 'package:pocket_expense_tracker/models/expense.dart';
@@ -20,6 +21,24 @@ void main() {
     directory = await Directory.systemTemp.createTemp('expense_sync_test_');
     database = AppDatabase(pathOverride: '${directory.path}/expenses.db');
     await database.open();
+  });
+
+  test('Google sign-in configuration failure is actionable', () {
+    final failure = SyncFailure.describe(
+      PlatformException(code: 'sign_in_failed', message: 'ApiException: 10'),
+    );
+
+    expect(failure.retryable, isFalse);
+    expect(failure.userMessage, contains('not configured'));
+  });
+
+  test('Google sign-in network failure is retryable', () {
+    final failure = SyncFailure.describe(
+      PlatformException(code: 'network_error'),
+    );
+
+    expect(failure.retryable, isTrue);
+    expect(failure.userMessage, contains('internet connection'));
   });
 
   tearDown(() async {
@@ -52,6 +71,33 @@ void main() {
       expect(await database.setting('last_successful_sync'), isNotNull);
     },
   );
+
+  test('editing a synced expense updates the same remote ID', () async {
+    final remote = _FakeRemoteStore();
+    final engine = ExpenseSyncEngine(database: database, remote: remote);
+    final original = record('edit-stable-id');
+    await database.add(original);
+    await engine.sync();
+
+    final edited = Expense(
+      id: original.id,
+      subject: 'Updated lunch',
+      amountPaise: 12550,
+      expenseDate: '2026-10-20',
+      createdAt: original.createdAt,
+      updatedAt: '2026-10-22T12:00:00Z',
+      description: 'Edited offline then synced',
+      paymentMethod: 'UPI',
+      category: 'Food',
+    );
+    await database.updateExpense(edited);
+    await engine.sync();
+
+    expect(remote.active.keys, ['edit-stable-id']);
+    expect(remote.active['edit-stable-id']?.toMap(), edited.toMap());
+    expect(remote.applyCount, 2);
+    expect(await database.pendingCount(), 0);
+  });
 
   test(
     'network failure leaves operation pending with retry metadata',

@@ -23,13 +23,13 @@ class AppPalette extends ThemeExtension<AppPalette> {
   final Color expense;
 
   static const light = AppPalette(
-    page: Color(0xFFFFFBD0),
-    surface: Color(0xFFFFFDEB),
-    raisedSurface: Color(0xFFEAF2DC),
-    navigation: Color(0xFFFFFBD0),
-    border: Color(0xFFB8D985),
-    iconSurface: Color(0xFFEAF2DC),
-    chartGrid: Color(0xFFD9E3CB),
+    page: Color(0xFFF5F8F5),
+    surface: Color(0xFFFFFFFF),
+    raisedSurface: Color(0xFFE7F3EB),
+    navigation: Color(0xFFFBFDFC),
+    border: Color(0xFFDCE7DF),
+    iconSurface: Color(0xFFE7F3EB),
+    chartGrid: Color(0xFFD8E5DC),
     expense: Color(0xFFE92732),
   );
 
@@ -82,10 +82,10 @@ class AppPalette extends ThemeExtension<AppPalette> {
 }
 
 class AppTheme {
-  static const _lightGreen = Color(0xFF5F8738);
-  static const _darkGreen = Color(0xFF45682C);
-  static const _nightGreen = Color(0xFF8DBF61);
-  static const _nightOnGreen = Color(0xFF203018);
+  static const _lightGreen = Color(0xFF087F5B);
+  static const _darkGreen = Color(0xFF087F5B);
+  static const _nightGreen = Color(0xFF64D6A5);
+  static const _nightOnGreen = Color(0xFF073B2A);
 
   static ThemeData light() => _build(
     brightness: Brightness.light,
@@ -156,9 +156,11 @@ class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: palette.navigation,
         indicatorColor: palette.raisedSurface,
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
+            fontSize: 11,
             fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
             color: selected ? primary : secondaryText,
           );

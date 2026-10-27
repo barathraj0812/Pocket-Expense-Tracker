@@ -1,4 +1,4 @@
-package com.example.pocket_expense_tracker
+package dev.pages.barath.pocketexpense
 
 import android.content.Intent
 import android.net.Uri

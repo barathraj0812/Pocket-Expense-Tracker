@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -11,6 +12,7 @@ import '../models/expense.dart';
 import 'analytics_screen.dart';
 import 'backup_restore_screen.dart';
 import 'custom_subjects_screen.dart';
+import 'expense_search_screen.dart';
 import 'policy_screen.dart';
 import '../services/expense_sync_engine.dart';
 import '../services/excel_export_service.dart';
@@ -97,10 +99,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          'Pocket Expense',
+          'Pocket Expense Tracker',
           style: TextStyle(fontWeight: FontWeight.w800),
         ),
         centerTitle: false,
+        actions: (tab == 0 || tab == 2)
+            ? [
+                IconButton(
+                  tooltip: 'Search all expenses',
+                  onPressed: _openSearch,
+                  icon: const Icon(Icons.search),
+                ),
+              ]
+            : null,
       ),
       body: Column(
         children: [
@@ -290,24 +301,42 @@ class _HomeScreenState extends State<HomeScreen> {
         title: Text(e.subject, style: TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(
           [
-                if (e.category != null) e.category!,
-                if (e.paymentMethod != null) e.paymentMethod!,
-                if ((e.description ?? '').isNotEmpty) 'Description',
+                if ((e.category ?? '').isNotEmpty) e.category!,
+                if ((e.paymentMethod ?? '').isNotEmpty) e.paymentMethod!,
+                if ((e.description ?? '').trim().isNotEmpty)
+                  e.description!.trim(),
               ].join(' · ').isEmpty
               ? 'Expense'
               : [
-                  if (e.category != null) e.category!,
-                  if (e.paymentMethod != null) e.paymentMethod!,
-                  if ((e.description ?? '').isNotEmpty) 'Description',
+                  if ((e.category ?? '').isNotEmpty) e.category!,
+                  if ((e.paymentMethod ?? '').isNotEmpty) e.paymentMethod!,
+                  if ((e.description ?? '').trim().isNotEmpty)
+                    e.description!.trim(),
                 ].join(' · '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
         ),
-        trailing: Text(
-          formatPaise(e.amountPaise),
-          style: TextStyle(
-            color: context.appPalette.expense,
-            fontWeight: FontWeight.w800,
-            fontSize: 16,
-          ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              formatPaise(e.amountPaise),
+              style: TextStyle(
+                color: context.appPalette.expense,
+                fontWeight: FontWeight.w800,
+                fontSize: 16,
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'Expense actions',
+              onSelected: (action) =>
+                  action == 'edit' ? _editExpense(e) : _deleteExpense(e),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
+            ),
+          ],
         ),
       ),
     ),
@@ -652,11 +681,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 future: widget.database.setting('spreadsheet_id'),
                 builder: (c, id) => FutureBuilder<String?>(
                   future: widget.database.setting('google_connected'),
-                  builder: (c, status) => Text(
-                    status.data == 'true' && id.data != null
-                        ? 'Connected spreadsheet · ${id.data}'
-                        : 'Google account not connected',
-                  ),
+                  builder: (c, status) {
+                    if (status.data != 'true' || id.data == null) {
+                      return const Text('Google account not connected');
+                    }
+                    return Row(
+                      children: [
+                        const Icon(Icons.check_circle_outline, size: 18),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Connected · ${id.data}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Copy spreadsheet ID',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () async {
+                            await Clipboard.setData(
+                              ClipboardData(text: id.data!),
+                            );
+                            if (mounted) _message('Spreadsheet ID copied.');
+                          },
+                          icon: const Icon(Icons.copy_outlined, size: 18),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
               const SizedBox(height: 4),
@@ -927,6 +980,76 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _openSearch() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ExpenseSearchScreen(
+          database: widget.database,
+          onEdit: _editExpense,
+          onDelete: _deleteExpense,
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _editExpense(Expense expense) async {
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (_) => ExpenseForm(
+        date: DateTime.parse(expense.expenseDate),
+        database: widget.database,
+        expense: expense,
+      ),
+    );
+    if (result != true || !mounted) return false;
+    changed();
+    if (await widget.database.setting('google_connected') == 'true' &&
+        mounted) {
+      await _runSync();
+    }
+    return true;
+  }
+
+  Future<bool> _deleteExpense(Expense expense) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete expense?'),
+        content: const Text(
+          'This expense will be removed from your views and marked for sync deletion.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return false;
+    try {
+      await widget.database.delete(expense);
+      if (!mounted) return false;
+      changed();
+      if (await widget.database.setting('google_connected') == 'true' &&
+          mounted) {
+        await _runSync();
+      }
+      return true;
+    } catch (_) {
+      if (mounted) {
+        _message('Could not delete this expense. It remains saved locally.');
+      }
+      return false;
+    }
+  }
+
   Future<void> _pickDate() async {
     final d = await showDatePicker(
       context: context,
@@ -948,6 +1071,13 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: Text('Close')),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(c);
+              await _editExpense(e);
+            },
+            child: const Text('Edit'),
+          ),
           TextButton(
             onPressed: () async {
               final yes = await showDialog<bool>(
@@ -1058,9 +1188,15 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class ExpenseForm extends StatefulWidget {
-  const ExpenseForm({super.key, required this.date, required this.database});
+  const ExpenseForm({
+    super.key,
+    required this.date,
+    required this.database,
+    this.expense,
+  });
   final DateTime date;
   final AppDatabase database;
+  final Expense? expense;
   @override
   State<ExpenseForm> createState() => _ExpenseFormState();
 }
@@ -1078,7 +1214,21 @@ class _ExpenseFormState extends State<ExpenseForm> {
   @override
   void initState() {
     super.initState();
-    date = widget.date;
+    final existing = widget.expense;
+    date = existing == null
+        ? widget.date
+        : DateTime.parse(existing.expenseDate);
+    if (existing != null) {
+      subject.text = existing.subject;
+      amount.text =
+          (existing.amountPaise ~/ 100).toString() +
+          (existing.amountPaise % 100 == 0
+              ? ''
+              : '.${(existing.amountPaise % 100).toString().padLeft(2, '0')}');
+      description.text = existing.description ?? '';
+      category = existing.category;
+      payment = existing.paymentMethod;
+    }
     savedSubjects = widget.database.customSubjects();
   }
 
@@ -1109,7 +1259,7 @@ class _ExpenseFormState extends State<ExpenseForm> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'New expense',
+                  widget.expense == null ? 'New expense' : 'Edit expense',
                   style: TextStyle(
                     fontSize: 23,
                     fontWeight: FontWeight.w800,
@@ -1155,7 +1305,7 @@ class _ExpenseFormState extends State<ExpenseForm> {
                   decoration: const InputDecoration(
                     labelText: 'Mode of Payment (optional)',
                   ),
-                  items: methods
+                  items: {...methods, ?payment}
                       .map((x) => DropdownMenuItem(value: x, child: Text(x)))
                       .toList(),
                   onChanged: (v) => setState(() => payment = v),
@@ -1165,7 +1315,7 @@ class _ExpenseFormState extends State<ExpenseForm> {
                   decoration: const InputDecoration(
                     labelText: 'Category (optional)',
                   ),
-                  items: categories
+                  items: {...categories, ?category}
                       .map((x) => DropdownMenuItem(value: x, child: Text(x)))
                       .toList(),
                   onChanged: (v) => setState(() => category = v),
@@ -1218,7 +1368,11 @@ class _ExpenseFormState extends State<ExpenseForm> {
                                       .onPrimary,
                                 ),
                               )
-                            : Text('Save expense'),
+                            : Text(
+                                widget.expense == null
+                                    ? 'Save expense'
+                                    : 'Save changes',
+                              ),
                       ),
                     ),
                   ],
@@ -1238,12 +1392,13 @@ class _ExpenseFormState extends State<ExpenseForm> {
     setState(() => saving = true);
     try {
       final now = DateTime.now().toUtc().toIso8601String();
+      final existing = widget.expense;
       final expense = Expense(
-        id: const Uuid().v4(),
+        id: existing?.id ?? const Uuid().v4(),
         subject: subject.text.trim(),
         amountPaise: parseAmountPaise(amount.text),
         expenseDate: dateKey(date),
-        createdAt: now,
+        createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         description: description.text.trim().isEmpty
             ? null
@@ -1251,7 +1406,11 @@ class _ExpenseFormState extends State<ExpenseForm> {
         paymentMethod: payment,
         category: category,
       );
-      await widget.database.add(expense);
+      if (existing == null) {
+        await widget.database.add(expense);
+      } else {
+        await widget.database.updateExpense(expense);
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;

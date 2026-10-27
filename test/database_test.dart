@@ -178,6 +178,100 @@ void main() {
   });
 
   test(
+    'editing updates the stable record and replaces queued upsert',
+    () async {
+      final original = Expense(
+        id: 'editable-id',
+        subject: 'Books',
+        amountPaise: 12500,
+        expenseDate: '2026-10-26',
+        createdAt: '2026-01-01T10:00:00Z',
+        updatedAt: '2026-01-01T10:00:00Z',
+        category: 'Education',
+        paymentMethod: 'UPI',
+        description: 'School materials',
+      );
+      await database.add(original);
+      final oldQueueId = (await database.pending()).single['id'];
+      final updated = Expense(
+        id: original.id,
+        subject: 'Course books',
+        amountPaise: 25050,
+        expenseDate: '2026-10-25',
+        createdAt: original.createdAt,
+        updatedAt: '2026-10-26T10:00:00Z',
+        category: 'Education',
+        paymentMethod: 'Cash',
+      );
+
+      await database.updateExpense(updated);
+
+      final all = await database.all();
+      expect(all, hasLength(1));
+      expect(all.single.toMap(), updated.toMap());
+      expect(await database.day(DateTime(2026, 10, 26)), isEmpty);
+      expect(
+        (await database.day(DateTime(2026, 10, 25))).single.id,
+        original.id,
+      );
+      expect(await database.pendingCount(), 1);
+      final queue = (await database.pending()).single;
+      expect(queue['operation'], 'upsert');
+      expect(queue['id'], isNot(oldQueueId));
+    },
+  );
+
+  test(
+    'global search matches text, exact amount, and normalized dates',
+    () async {
+      await database.add(
+        Expense(
+          id: 'searchable',
+          subject: 'Books',
+          amountPaise: 25050,
+          expenseDate: '2026-10-26',
+          createdAt: '2026-10-26T10:00:00Z',
+          updatedAt: '2026-10-26T10:00:00Z',
+          description: 'School materials',
+          paymentMethod: 'UPI',
+          category: 'Travel',
+        ),
+      );
+      await database.add(
+        Expense(
+          id: 'other',
+          subject: 'Lunch',
+          amountPaise: 12500,
+          expenseDate: '2026-10-25',
+          createdAt: '2026-10-25T10:00:00Z',
+          updatedAt: '2026-10-25T10:00:00Z',
+          description: 'Office',
+        ),
+      );
+
+      for (final query in [
+        '  tRaVeL  ',
+        'UPI',
+        'School',
+        '250.50',
+        '₹250.50',
+        '26 October 2026',
+        '26/10/2026',
+        '2026-10-26',
+      ]) {
+        expect((await database.searchExpenses(query: query)).map((e) => e.id), [
+          'searchable',
+        ], reason: 'query: $query');
+      }
+      expect((await database.searchExpenses(query: '125')).map((e) => e.id), [
+        'other',
+      ]);
+      expect(await database.searchExpenses(query: '25'), isEmpty);
+      expect(await database.searchExpenses(query: 'not found'), isEmpty);
+    },
+  );
+
+  test(
     'custom subjects trim whitespace and reject case-insensitive duplicates',
     () async {
       await database.addCustomSubject('  Stationery  ');

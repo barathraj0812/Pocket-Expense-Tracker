@@ -173,6 +173,35 @@ class AppDatabase {
     await _queue(t, expense.id, 'upsert');
   });
 
+  /// Updates the existing stable identity and replaces any older queued
+  /// operation with one upsert of the latest row state.
+  Future<void> updateExpense(Expense expense) async =>
+      db.transaction((t) async {
+        final rows = await t.query(
+          'expenses',
+          columns: ['id', 'deleted_at'],
+          where: 'id=?',
+          whereArgs: [expense.id],
+          limit: 1,
+        );
+        if (rows.isEmpty || rows.single['deleted_at'] != null) {
+          throw StateError('Expense no longer exists.');
+        }
+        final changed = await t.update(
+          'expenses',
+          {...expense.toMap(), 'deleted_at': null, 'sync_status': 'pending'},
+          where: 'id=? AND deleted_at IS NULL',
+          whereArgs: [expense.id],
+        );
+        if (changed != 1) throw StateError('Expense could not be updated.');
+        await t.delete(
+          'sync_queue',
+          where: 'expense_id=?',
+          whereArgs: [expense.id],
+        );
+        await _queue(t, expense.id, 'upsert');
+      });
+
   Future<void> _queue(Transaction t, String id, String operation) async {
     await t.insert('sync_queue', {
       'expense_id': id,
@@ -248,9 +277,17 @@ class AppDatabase {
         '(instr(lower(COALESCE(subject,\'\')),lower(?))>0 OR '
         'instr(lower(COALESCE(description,\'\')),lower(?))>0 OR '
         'instr(lower(COALESCE(category,\'\')),lower(?))>0 OR '
-        'instr(lower(COALESCE(payment_method,\'\')),lower(?))>0)',
+        'instr(lower(COALESCE(payment_method,\'\')),lower(?))>0 OR '
+        'amount_paise=? OR expense_date=?)',
       );
-      args.addAll([term, term, term, term]);
+      args.addAll([
+        term,
+        term,
+        term,
+        term,
+        _searchAmountPaise(term) ?? -1,
+        _searchDateKey(term) ?? '',
+      ]);
     }
     final rows = await db.query(
       'expenses',
@@ -259,6 +296,69 @@ class AppDatabase {
       orderBy: 'expense_date DESC, created_at DESC',
     );
     return rows.map(Expense.fromMap).toList();
+  }
+
+  int? _searchAmountPaise(String term) {
+    final normalized = term
+        .replaceAll(',', '')
+        .replaceFirst(RegExp(r'^₹\s*'), '');
+    if (!RegExp(r'^\d+(?:\.\d{1,2})?$').hasMatch(normalized)) return null;
+    try {
+      return parseAmountPaise(normalized);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  String? _searchDateKey(String term) {
+    final numeric =
+        RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})$').firstMatch(term) ??
+        RegExp(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$').firstMatch(term);
+    if (numeric != null) {
+      final isIso = term.contains('-') && numeric.group(1)!.length == 4;
+      return _checkedDateKey(
+        int.parse(numeric.group(isIso ? 1 : 3)!),
+        int.parse(numeric.group(isIso ? 2 : 2)!),
+        int.parse(numeric.group(isIso ? 3 : 1)!),
+      );
+    }
+    final human = RegExp(r'^(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})$')
+        .firstMatch(term.toLowerCase());
+    if (human == null) return null;
+    const months = <String>[
+      'january',
+      'february',
+      'march',
+      'april',
+      'may',
+      'june',
+      'july',
+      'august',
+      'september',
+      'october',
+      'november',
+      'december',
+    ];
+    final monthName = human.group(2)!;
+    final month =
+        months.indexWhere(
+          (name) => name == monthName || name.substring(0, 3) == monthName,
+        ) +
+        1;
+    if (month == 0) return null;
+    return _checkedDateKey(
+      int.parse(human.group(3)!),
+      month,
+      int.parse(human.group(1)!),
+    );
+  }
+
+  String? _checkedDateKey(int year, int month, int day) {
+    final value = DateTime(year, month, day);
+    if (value.year != year || value.month != month || value.day != day) {
+      return null;
+    }
+    return dateKey(value);
   }
 
   Future<List<String>> distinctExpenseValues(String field) async {

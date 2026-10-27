@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+
 import '../data/app_database.dart';
 import '../models/expense.dart';
 
@@ -17,6 +21,32 @@ class SyncFailure implements Exception {
 
   static SyncFailure describe(Object error) {
     if (error is SyncFailure) return error;
+    _logFailure(error);
+    if (error is PlatformException) {
+      switch (error.code) {
+        case 'sign_in_canceled':
+          return const SyncFailure(
+            'Google sign-in was cancelled. Connect again when you are ready.',
+            retryable: false,
+          );
+        case 'network_error':
+          return const SyncFailure(
+            'Unable to reach Google. Check your internet connection and try again.',
+            retryable: true,
+          );
+        case 'sign_in_failed':
+          if (_isGoogleConfigurationFailure(error.message)) {
+            return const SyncFailure(
+              'Google sign-in is not configured for this app build. Contact the app owner.',
+              retryable: false,
+            );
+          }
+          return const SyncFailure(
+            'Google sign-in failed. Please try connecting again.',
+            retryable: true,
+          );
+      }
+    }
     int? status;
     try {
       status = (error as dynamic).status as int?;
@@ -53,9 +83,11 @@ class SyncFailure implements Exception {
         retryable: false,
       );
     }
-    if (error is TimeoutException || error is SocketException) {
+    if (error is TimeoutException ||
+        error is SocketException ||
+        error is http.ClientException) {
       return const SyncFailure(
-        'Sync timed out or the device is offline. Local expenses remain queued.',
+        'Unable to reach Google. Check your internet connection and try again.',
         retryable: true,
       );
     }
@@ -63,6 +95,18 @@ class SyncFailure implements Exception {
       'Sync failed. Your local expenses are safe and remain queued. Check your connection and try again.',
       retryable: true,
     );
+  }
+
+  static bool _isGoogleConfigurationFailure(String? message) {
+    if (message == null) return false;
+    return RegExp(r'(?:^|\D)10(?:\D|$)').hasMatch(message) ||
+        message.contains('DEVELOPER_ERROR');
+  }
+
+  static void _logFailure(Object error) {
+    if (!kDebugMode) return;
+    final detail = error is PlatformException ? ' code=${error.code}' : '';
+    debugPrint('Google sync failure: ${error.runtimeType}$detail');
   }
 
   @override

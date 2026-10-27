@@ -56,6 +56,8 @@ class SheetsSync {
         );
       }
       return await operation(token);
+    } catch (error) {
+      throw SyncFailure.describe(error);
     } finally {
       _driveOperation = false;
     }
@@ -77,92 +79,94 @@ class SheetsSync {
   }
 
   Future<bool> _connect({required bool createNewSpreadsheet}) async {
-    final account = await _google.signIn();
-    if (account == null) return false;
-
-    final savedId = await db.setting('spreadsheet_id');
-    final savedEmail = await db.setting('google_account_email');
-    if (savedId != null &&
-        savedEmail != null &&
-        savedEmail.toLowerCase() != account.email.toLowerCase() &&
-        !createNewSpreadsheet) {
-      throw const SyncFailure(
-        'This spreadsheet is connected to a different Google account. Reconnect with the original account; no new spreadsheet was created.',
-        retryable: false,
-      );
-    }
-
-    final auth = await account.authentication;
-    final token = auth.accessToken;
-    if (token == null) {
-      throw const SyncFailure(
-        'Google authorization is unavailable. Reconnect your account; local expenses remain safe.',
-        retryable: false,
-      );
-    }
-
-    final client = _AuthorizedClient(token);
     try {
-      final api = sheets.SheetsApi(client);
-      var spreadsheetId = savedId;
-      final isChangingDestination =
-          createNewSpreadsheet ||
-          spreadsheetId == null ||
-          spreadsheetId.isEmpty;
-      if (isChangingDestination) {
-        spreadsheetId = await db.setting('pending_spreadsheet_id');
-      }
-      if (isChangingDestination &&
-          (spreadsheetId == null || spreadsheetId.isEmpty)) {
-        final created = await api.spreadsheets.create(
-          sheets.Spreadsheet(
-            properties: sheets.SpreadsheetProperties(title: 'Pocket Expense'),
-            sheets: [
-              sheets.Sheet(
-                properties: sheets.SheetProperties(
-                  title: GoogleSheetsExpenseStore.expenseSheet,
-                ),
-              ),
-            ],
-          ),
-          $fields: 'spreadsheetId',
-        );
-        spreadsheetId = created.spreadsheetId;
-        if (spreadsheetId == null || spreadsheetId.isEmpty) {
-          throw const SyncFailure(
-            'Google did not return a spreadsheet ID. Local expenses remain safe.',
-            retryable: true,
-          );
-        }
-        // Keep a recoverable candidate so a retry after interrupted setup does
-        // not create another spreadsheet.
-        await db.setSetting('pending_spreadsheet_id', spreadsheetId);
-      }
+      final account = await _google.signIn();
+      if (account == null) return false;
 
-      final targetSpreadsheetId = spreadsheetId;
-      if (targetSpreadsheetId == null || targetSpreadsheetId.isEmpty) {
+      final savedId = await db.setting('spreadsheet_id');
+      final savedEmail = await db.setting('google_account_email');
+      if (savedId != null &&
+          savedEmail != null &&
+          savedEmail.toLowerCase() != account.email.toLowerCase() &&
+          !createNewSpreadsheet) {
         throw const SyncFailure(
-          'No spreadsheet destination is available. Local expenses remain safe.',
+          'This spreadsheet is connected to a different Google account. Reconnect with the original account; no new spreadsheet was created.',
           retryable: false,
         );
       }
-      final store = GoogleSheetsExpenseStore(
-        api: api,
-        spreadsheetId: targetSpreadsheetId,
-      );
-      await store.ensureReady();
-      if (isChangingDestination) {
-        await db.switchSpreadsheet(targetSpreadsheetId, account.email);
-        await db.removeSetting('pending_spreadsheet_id');
-      } else {
-        await db.setSetting('google_account_email', account.email);
-        await db.setSetting('google_connected', 'true');
+
+      final auth = await account.authentication;
+      final token = auth.accessToken;
+      if (token == null) {
+        throw const SyncFailure(
+          'Google authorization is unavailable. Reconnect your account; local expenses remain safe.',
+          retryable: false,
+        );
       }
-      return true;
+
+      final client = _AuthorizedClient(token);
+      try {
+        final api = sheets.SheetsApi(client);
+        var spreadsheetId = savedId;
+        final isChangingDestination =
+            createNewSpreadsheet ||
+            spreadsheetId == null ||
+            spreadsheetId.isEmpty;
+        if (isChangingDestination) {
+          spreadsheetId = await db.setting('pending_spreadsheet_id');
+        }
+        if (isChangingDestination &&
+            (spreadsheetId == null || spreadsheetId.isEmpty)) {
+          final created = await api.spreadsheets.create(
+            sheets.Spreadsheet(
+              properties: sheets.SpreadsheetProperties(title: 'Pocket Expense'),
+              sheets: [
+                sheets.Sheet(
+                  properties: sheets.SheetProperties(
+                    title: GoogleSheetsExpenseStore.expenseSheet,
+                  ),
+                ),
+              ],
+            ),
+            $fields: 'spreadsheetId',
+          );
+          spreadsheetId = created.spreadsheetId;
+          if (spreadsheetId == null || spreadsheetId.isEmpty) {
+            throw const SyncFailure(
+              'Google did not return a spreadsheet ID. Local expenses remain safe.',
+              retryable: true,
+            );
+          }
+          // Keep a recoverable candidate so a retry after interrupted setup does
+          // not create another spreadsheet.
+          await db.setSetting('pending_spreadsheet_id', spreadsheetId);
+        }
+
+        final targetSpreadsheetId = spreadsheetId;
+        if (targetSpreadsheetId == null || targetSpreadsheetId.isEmpty) {
+          throw const SyncFailure(
+            'No spreadsheet destination is available. Local expenses remain safe.',
+            retryable: false,
+          );
+        }
+        final store = GoogleSheetsExpenseStore(
+          api: api,
+          spreadsheetId: targetSpreadsheetId,
+        );
+        await store.ensureReady();
+        if (isChangingDestination) {
+          await db.switchSpreadsheet(targetSpreadsheetId, account.email);
+          await db.removeSetting('pending_spreadsheet_id');
+        } else {
+          await db.setSetting('google_account_email', account.email);
+          await db.setSetting('google_connected', 'true');
+        }
+        return true;
+      } finally {
+        client.close();
+      }
     } catch (error) {
       throw SyncFailure.describe(error);
-    } finally {
-      client.close();
     }
   }
 
@@ -198,64 +202,66 @@ class SheetsSync {
   }
 
   Future<void> _syncAuthenticated() async {
-    if (await db.setting('backup_restore_sync_paused') == 'true') {
-      throw const SyncFailure(
-        'Sheets sync is paused after restoring a backup. Review the restored records first, then create a new spreadsheet destination to safely sync a complete snapshot.',
-        retryable: false,
-      );
-    }
-    if (_connecting) {
-      throw const SyncFailure(
-        'Wait for Google account setup to finish before syncing.',
-        retryable: false,
-      );
-    }
-    final account = await _google.signInSilently();
-    if (account == null) {
-      throw const SyncFailure(
-        'Connect the Google account associated with the saved spreadsheet. Local expenses remain queued.',
-        retryable: false,
-      );
-    }
-    final savedEmail = await db.setting('google_account_email');
-    if (savedEmail != null &&
-        savedEmail.toLowerCase() != account.email.toLowerCase()) {
-      throw const SyncFailure(
-        'The signed-in Google account does not match the account connected to this spreadsheet. Reconnect the original account.',
-        retryable: false,
-      );
-    }
-    final token = (await account.authentication).accessToken;
-    if (token == null) {
-      throw const SyncFailure(
-        'Google authorization expired. Reconnect your Google account; local expenses remain queued.',
-        retryable: false,
-      );
-    }
-    final spreadsheetId = await db.setting('spreadsheet_id');
-    if (spreadsheetId == null || spreadsheetId.isEmpty) {
-      throw const SyncFailure(
-        'No spreadsheet is connected. Connect Google before syncing.',
-        retryable: false,
-      );
-    }
-
-    final client = _AuthorizedClient(token);
     try {
-      final remote = GoogleSheetsExpenseStore(
-        api: sheets.SheetsApi(client),
-        spreadsheetId: spreadsheetId,
-      );
-      final engine = ExpenseSyncEngine(database: db, remote: remote);
-      do {
-        final retryBlocked = _retryBlockedRequested;
-        _retryBlockedRequested = false;
-        await engine.sync(retryBlocked: retryBlocked);
-      } while (_retryBlockedRequested);
+      if (await db.setting('backup_restore_sync_paused') == 'true') {
+        throw const SyncFailure(
+          'Sheets sync is paused after restoring a backup. Review the restored records first, then create a new spreadsheet destination to safely sync a complete snapshot.',
+          retryable: false,
+        );
+      }
+      if (_connecting) {
+        throw const SyncFailure(
+          'Wait for Google account setup to finish before syncing.',
+          retryable: false,
+        );
+      }
+      final account = await _google.signInSilently();
+      if (account == null) {
+        throw const SyncFailure(
+          'Connect the Google account associated with the saved spreadsheet. Local expenses remain queued.',
+          retryable: false,
+        );
+      }
+      final savedEmail = await db.setting('google_account_email');
+      if (savedEmail != null &&
+          savedEmail.toLowerCase() != account.email.toLowerCase()) {
+        throw const SyncFailure(
+          'The signed-in Google account does not match the account connected to this spreadsheet. Reconnect the original account.',
+          retryable: false,
+        );
+      }
+      final token = (await account.authentication).accessToken;
+      if (token == null) {
+        throw const SyncFailure(
+          'Google authorization expired. Reconnect your Google account; local expenses remain queued.',
+          retryable: false,
+        );
+      }
+      final spreadsheetId = await db.setting('spreadsheet_id');
+      if (spreadsheetId == null || spreadsheetId.isEmpty) {
+        throw const SyncFailure(
+          'No spreadsheet is connected. Connect Google before syncing.',
+          retryable: false,
+        );
+      }
+
+      final client = _AuthorizedClient(token);
+      try {
+        final remote = GoogleSheetsExpenseStore(
+          api: sheets.SheetsApi(client),
+          spreadsheetId: spreadsheetId,
+        );
+        final engine = ExpenseSyncEngine(database: db, remote: remote);
+        do {
+          final retryBlocked = _retryBlockedRequested;
+          _retryBlockedRequested = false;
+          await engine.sync(retryBlocked: retryBlocked);
+        } while (_retryBlockedRequested);
+      } finally {
+        client.close();
+      }
     } catch (error) {
       throw SyncFailure.describe(error);
-    } finally {
-      client.close();
     }
   }
 }
