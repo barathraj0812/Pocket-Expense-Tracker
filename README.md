@@ -10,6 +10,8 @@
 
 **Download:** Visit the [GitHub Releases page](https://github.com/barathraj0812/Pocket-Expense-Tracker/releases/latest) and download the v2.0.0 Android APK from its Assets section.
 
+**[Download V2]https://github.com/barathraj0812/Pocket-Expense-Tracker/releases/download/v2.0.0/pocket_expense_trackerv2.apk**
+
 > **Installation note:** v2 uses the application ID `dev.pages.barath.pocketexpense`. An older installation using `com.example.pocket_expense_tracker` is treated as a separate app and has separate private storage. Export or back up your old expenses and verify the backup before switching or removing the older app.
 
 ## What's New in v2.0.0
